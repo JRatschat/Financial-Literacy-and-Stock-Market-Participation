@@ -1,0 +1,1067 @@
+---
+title: "Big Data in Personal Finance"
+author: "Jonathan Ratschat"
+date: "3 1 2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning= FALSE, message = FALSE)
+```
+
+# Packages
+
+```{r}
+library(haven) #working with .dta
+library(dplyr) #tidy working
+library(GGally) #visualization of correlations
+library(MASS) #backward regression
+library(survey) #weighted data
+library(srvyr) #extension of survey package
+library(poliscidata) #model fit statistics for survey package
+library(jtools) #standard error calculation for survey package
+library(ggplot2) #visualization
+library(lmtest) #test if heterogeneity is a problem (Breusch-Pagan test)
+library(sandwich) #robustness of standard errors
+library(stargazer) #visualization of tables
+library(reshape2) #wide to long format, long to wide format
+library(tidyr) #tidy messy data
+library(HH)
+```
+
+# Importing data
+
+```{r}
+#Import main survey data
+Data <- read_dta("p16i6.dta")
+Test <- Data
+
+#Delete J-variables except the J-variables of the independent variables 
+#(J-variables indicate missing/imputed data)
+Data <- dplyr::select(Data, starts_with("X"), J3913, J3915, Y1, YY1)
+
+#Import core variables (e.g. fin, networth, asset, etc.)
+CoreData <- read_dta("rscfp2016.dta")
+
+#Merge main survey data and core variables
+Data <- merge(Data, CoreData, by = c("Y1", "YY1"))
+
+#Remove CoreData
+rm(CoreData)
+
+#Transform weighting variable to fit single implicate
+Data$nwgt <- Data$X42001/(5*20163.523)
+summary(Data$nwgt)
+
+#Data using only first implicate
+Data <- Data[!duplicated(Data$YY1),]
+
+#Delete households whose stock value was completely missing: 79 observations deleted
+#Shadow variables: Codes of 1097 or more indicate that the associated data value 
+#was completely missing
+Data <- dplyr::filter(Data, J3915 <= 1096)
+
+#Use of survey package for weighting
+
+#Create svydesign for weighting data set
+weight <- svydesign(ids = ~1, #no clusters
+                    probs = NULL, #no cluster sampling probabilities
+                    fpc = NULL, #strata size in the population
+                    strata = NULL, #no strata
+                    weights = Data$nwgt, data = Data)
+```
+
+# Variables
+
+## Stock market particpation
+
+### Stocks
+
+```{r}
+#Stocks
+
+#hstocks: Do you (or anyone in your family living here) own any stock which is 
+#publicly traded?, yes = 1, no = 0
+
+#X3915 or stocks: total market value of stocks
+summary(Data$stocks)
+```
+
+### Mutual funds
+
+```{r}
+#stmutf: total market value of all stock mutual funds and ETFs
+
+#comutf: total market value of combination mutual funds
+
+#stcomutf: full value if described as stock mutual fund, 1/2 value of combination 
+#mutual funds
+Data$stcomutf <- Data$stmutf + 0.5 * Data$comutf
+summary(Data$stcomutf)
+
+#hstcomutf: does respondent have stock mutual fund or combination mutual fund? yes = 1, no = 0
+Data$hstcomutf <- ifelse(Data$stcomutf > 100, 1, 0)
+```
+
+### Retirement
+
+```{r}
+#Retirement
+
+#reteq: equity in quasi-liquid retirement assets (individual retirement accounts/Keoghs 
+#[IRAKH], account-type pensions on current job [THRIFT], future pensions [FUTPEN], 
+#currently received accounttype pensions [CURRPEN])
+summary(Data$reteq)
+
+#hreteq: does respondent have quasi-liquid retirement assets? yes = 1, no = 0
+Data$hreteq <- ifelse(Data$reteq > 100, 1, 0)
+```
+
+### Totals
+
+```{r}
+#ststcomutf: total market value of stocks and stcomutf
+Data$ststcomutf <- Data$stocks + Data$stcomutf
+
+#hststcomutf: has stocks and stcomutf
+Data$hststcomutf <- ifelse(Data$ststcomutf > 100, 1, 0)
+summary(Data$hststcomutf)
+
+#sttotal: total market value of stocks, stock mutual funds, combination mutual funds and 
+#quasi-liquid retirement assets
+Data$sttotal <- Data$stocks + Data$stcomutf + Data$reteq
+summary(Data$sttotal)
+
+#hsttotal: has stocks, stock mutual funds, combination mutual funds and quasi-liquid 
+#retirement assets
+Data$hsttotal <- ifelse(Data$sttotal > 100, 1, 0)
+
+summary(Data$hsttotal)
+```
+
+## Financial literacy
+
+```{r}
+#X7558: Financial literacy diversification, correct answer: 5
+#X7559: Financial literacy interest rate, correct answer: 1
+#X7560: Financial literacy inflation, correct answer: 5
+#finlit: Number of questions right
+#baseFinlit: base financial literacy (all three questions right) = 1, not financial 
+#literate (two or less questions right) = 0
+Data$baseFinlit <- ifelse(Data$finlit == 3, 1, 0)
+
+#as.factor
+Data$baseFinlit <- as.integer(Data$baseFinlit)
+
+#X7556 or selfFinlit: Personal finance knowledge, scale 1 to 10, -1 instead of 0
+Data$selfFinlit <- ifelse(Data$X7556 == -1, 0, Data$X7556)
+
+#Maybe include:
+#X7562: When making saving and investment decisions, some people search for the very 
+#best terms while others don't, scale 1 to 10, -1 instead of 0
+#X7112 X7113 X7114 X7115 X7116 X7117 X7118 X7119 
+#X7120 X7121 X6865 X6866 X6867 X6868 X6869 Please look at this list. 
+#What sources of information do you (and your {husband/wife/partner)use to make decisions 
+#about saving and investments?(Do you callaround, read newspapers, magazines, material you 
+#get in the mail, use information from television, radio, the Internet or advertisements?  
+#Do you get advice from a friend, relative, lawyer, accountant, banker, broker, or financial 
+#planner?  Or do you do something else?)
+```
+
+## Age
+
+```{r}
+#X14 or age: Age, numeric
+#Create age2
+Data$age2 <- Data$age^2
+
+#ageGroups as factor
+Data$ageGroups <- ifelse(Data$age >= 18 & Data$age <= 35, 1, 
+                         ifelse(Data$age >= 36 & Data$age <= 50, 2, 
+                                ifelse(Data$age >= 51 & Data$age <= 65, 3, 4)))
+Data$ageGroups <- as.factor(Data$ageGroups)
+```
+
+## Sex
+
+```{r}
+#X8021 or hhsex: Sex, male = 1, female = 2
+#Change to male = 0, female = 1
+Data$hhsex <- ifelse(Data$X8021 == 2, 1, 0)
+summary(Data$hhsex)
+
+#Create factor variable
+Data$hhsex <- as.factor(Data$hhsex)
+```
+
+## Marital status
+
+```{r}
+#X8023: Marital status, married = 1, living with partner = 2, separated = 3, 
+#divorced = 4, widowed = 5, never married = 6, person under 17 = 0
+#married: married/living with partner = 1, neither married nor living with partner = 2
+#Change to married/living with partner = 1, neither married nor living with partner = 0
+Data$married[Data$married == 2] <- 0
+summary(Data$married)
+
+#Create factor variable
+Data$married <- as.factor(Data$married)
+```
+
+# Education
+
+```{r}
+#educ or X5913: What is the highest level of school completed or the highest degree you have 
+#received? 1st, 2nd, 3rd, or 4th grade = 1, 5th or 6th grade = 2, 7th and 8th grade = 3, 
+#9th grade = 4, 10th grade = 5, 11th grade = 6, 12th grade, no diploma = 7, 
+#High school graduate - high school diploma or equivalent = 8, Some college but no degree = 9, 
+#Associate degree in college - occupation/vocation program = 10, 
+#Associate degree in college - academic program = 11, 
+#Bachelor's degree (for example: BA, AB, BS) = 12, Master's degree ( for exmaple: MA, MS, 
+#MENG, MED, MSW, MBA) = 13, Professional school degree (for example: MD, DDS, DVM, LLB, JD) = 14, 
+#Doctorate degree (for example: PHD, EDD) = 15, Less than 1st grade = 0
+
+#Switch -1 with 0
+Data$educ[Data$educ == -1] <- 0
+
+#Create educ2
+Data$educ2 <- Data$educ^2
+
+#Create factor variable: less than highschool = 1, high school degree and some college = 2, 
+#college degree or bachelor degree = 3, master or higher = 4
+Data$educFactor <- ifelse(Data$educ >= 0 & Data$educ <= 7, 1, 
+                          ifelse(Data$educ == 8 |Data$educ == 9, 2, 
+                                 ifelse(Data$educ >= 10 & Data$educ <= 12, 3, 4)))
+Data$educFactor <- as.factor(Data$educFactor)
+```
+
+## Employed and unemployed
+
+```{r}
+#X6670: 1.    *WORKING NOW/SELF-EMPLOYED; job accepted and waiting to start work = 1, 
+#TEMPORARILY LAID OFF; seasonal work and not working now = 2, UNEMPLOYED AND LOOKING FOR WORK = 3, 
+#STUDENT; job training = 4, *HOMEMAKER; never worked; misc. out of the labor force n.e.c. 
+#(including prison) = 5, DISABLED = 6, RETIRED (FULL, PARTIAL, OR TEMPORARY) = 7, 
+#ON SICK LEAVE OR MATERNITY LEAVE = 8, VOLUNTEER WORK = 9, ON VACATION/OTHER LEAVE OF ABSENCE = 9, 
+#On sabbatical/extended leave and expecting to go back to job = 13, ON STRIKE = 15, OTHER NOT 
+#WORKING AND NOT LOOKING FOR WORK = 16
+
+#Create factor variable
+Data$X6670 <- as.factor(Data$X6670)
+
+#Create factor indicating employment
+Data$employed <- ifelse(Data$X6670 == 1, 1, 0)
+summary(Data$employed)
+
+#Create factor indicating unemployment
+Data$unemployed <- ifelse(Data$X6670 == 3, 1, 0)
+summary(Data$unemployed)
+
+#Create factor indicating being retired
+Data$retired <- ifelse(Data$X6670 == 7, 1, 0)
+summary(Data$retired)
+```
+
+# Sample data set based on financial net worth and income
+
+## Financial net worth
+
+```{r}
+#Financial net worth
+Data$netfin <- Data$fin - Data$ccbal - Data$install - Data$odebt
+summary(Data$netfin)
+
+#Non-financial net worth
+Data$netnfin <- Data$nfin - Data$mrthel - Data$resdbt - Data$othloc
+summary(Data$netnfin)
+```
+
+## Income
+```{r}
+#income: total income 2015 from all sources, before taxes and other deductions
+summary(Data$income)
+```
+
+## Sampling
+
+```{r}
+Data$netfin <- ifelse(Data$netnfin > 0 & Data$netfin == 0, 1, Data$netfin)
+
+Data <- filter(Data, Data$netfin > 0, Data$income > 0)
+```
+
+## Create log of financial net worth and income and control correlation of basic financial literacy and self-assessed financial literacy
+
+```{r}
+Data$lognetfin <- log(Data$netfin) 
+
+Data$logincome <- log(Data$income)
+
+#Use of survey package for weighting
+#Create svydesign
+weight <- svydesign(ids = ~1, #no clusters
+                    probs = NULL, #no cluster sampling probabilities
+                    fpc = NULL, #strata size in the population
+                    strata = NULL, #no strata
+                    weights = Data$nwgt, data = Data)
+
+#Calculate correlation
+c <- svycor(~baseFinlit + selfFinlit, design = weight, sig.stats = TRUE)
+c$cors
+c$p.values
+c$std.err
+```
+
+## Real estate
+
+```{r}
+#houses: value of primary residence
+summary(Data$houses)
+
+#oresre: value of other residential real estate (e.g. vacation homes)
+summary(Data$oresre)
+
+#housing value: value of primary residence + other residential real estate
+Data$housing <- Data$houses + Data$oresre
+Data$housing[Data$housing == -1] <- 0
+summary(Data$housing)
+
+#nnresre: net equity in nonresidential real estate
+summary(Data$nnresre)
+
+#thousing: total housing value
+Data$thousing <- Data$housing + Data$nnresre
+summary(Data$thousing)
+
+#thousingRatio: total housing value relative to asset value
+Data$thousingRatio <- Data$thousing / Data$asset
+Data$thousingRatio <- ifelse(is.na(Data$thousingRatio), 0, Data$thousingRatio)
+summary(Data$thousingRatio)
+
+#Binary variable indicating home ownership
+Data$hthousing <- ifelse(Data$thousing > 10000, 1, 0)
+Data$hthousing <- as.factor(Data$hthousing)
+```
+
+## Business
+
+```{r}
+#bus: business interests; for businesses where the HH has an active interest, value is net equity if 
+#business were sold today, plus loans from HH to business, minus loans from business to HH not 
+#previously reported, plus value of personal assets used as collateral for business loans that 
+#were reported earlier; for businesses where the HH does not have an active interest, market value of the interest
+summary(Data$bus)
+
+#busRatio: business value relative to asset value
+Data$busRatio <- Data$bus / Data$asset
+Data$busRatio <- ifelse(is.na(Data$busRatio), 0, Data$busRatio)
+summary(Data$busRatio)
+
+#Binary variable indicating home ownership
+Data$hbus <- ifelse(Data$bus > 10000, 1, 0)
+Data$hbus <- as.factor(Data$hbus)
+
+Test <- filter(Data, bus < 10000 & bus > 0)
+summary(Test$netfin)
+```
+
+## Risk attitude
+
+```{r}
+#X3014:  Which of the statements on this page comes closest to the amount of financial risk that 
+#you (and your {husband/wife/partner}) are willing to take when you save or make investments? 
+#Take substantial financial risks expecting to earn substantial returns = 1, 
+#Take above average financial risks expecting to earn above average returns = 2, 
+#Take average financial risks expecting to earn average returns = 3, 
+#Not willing to take any financial risks = 4
+Data$finRisk <- Data$X3014
+Data$finRisk <- as.factor(Data$finRisk)
+
+summary(Data$finRisk)
+
+Data$finRiskNumeric <- ifelse(Data$X3014 == 1, 4, 
+                              ifelse(Data$X3014 == 2, 3, 
+                                     ifelse(Data$X3014 == 3, 2, 1)))
+
+prop.table(table(Data$finRisk))
+prop.table(table(Data$finRiskNumeric))
+```
+
+# Descriptives
+
+## Table 1 - Sample statistics
+
+```{r}
+#Describtive table: mean, SD
+
+weightsrvyr <- Data %>%
+   as_survey_design(weights = nwgt)
+
+#Create svydesign
+weight <- svydesign(ids = ~1, #no clusters
+                    probs = NULL, #no cluster sampling probabilities
+                    fpc = NULL, #strata size in the population
+                    strata = NULL, #no strata
+                    weights = Data$nwgt, data = Data)
+
+rowAge <- weightsrvyr %>% 
+  srvyr::summarise(X14 = survey_mean(X14))
+rowAge <- cbind(round(rowAge[,1], digit = 0), rowAge[,2])
+
+colnames(rowAge) <- c("Mean", "Std. Err.")
+
+rowAge1 <- svymean(~ageGroups, design = weight)
+rowAge1 <- as.data.frame(rowAge1)
+rowAge1
+
+colnames(rowAge1) <- c("Mean", "Std. Err.")
+
+rowMen <- svymean(~hhsex, design = weight)
+rowMen <- as.data.frame(rowMen)
+rowMen <- rowMen[1,]
+
+colnames(rowMen) <- c("Mean", "Std. Err.")
+
+rowMarried <- svymean(~married, design = weight)
+rowMarried <- as.data.frame(rowMarried)
+rowMarried <- rowMarried[2,]
+
+colnames(rowMarried) <- c("Mean", "Std. Err.")
+
+rowEduc <- svymean(~educFactor, design = weight)
+rowEduc <- as.data.frame(rowEduc)
+
+colnames(rowEduc) <- c("Mean", "Std. Err.")
+
+rowEmployed <- svymean(~employed, design = weight)
+rowEmployed <- as.data.frame(rowEmployed)
+rowEmployed <- rowEmployed[1,]
+
+colnames(rowEmployed) <- c("Mean", "Std. Err.")
+
+rowUnemployed <- svymean(~unemployed, design = weight)
+rowUnemployed <- as.data.frame(rowUnemployed)
+rowUnemployed <- rowUnemployed[1,]
+
+colnames(rowUnemployed) <- c("Mean", "Std. Err.")
+
+rowRetired <- svymean(~retired, design = weight)
+rowRetired <- as.data.frame(rowRetired)
+
+colnames(rowRetired) <- c("Mean", "Std. Err.")
+
+rowIncome <- weightsrvyr %>% 
+  srvyr::summarise(income = survey_mean(income))
+rowIncome <- cbind(round(rowIncome[,1], digit = 0), rowIncome[,2])
+
+colnames(rowIncome) <- c("Mean", "Std. Err.")
+
+rowNetfin <- weightsrvyr %>% 
+  srvyr::summarise(netfin = survey_mean(netfin))
+rowNetfin <- cbind(round(rowNetfin[,1], digit = 0), rowNetfin[,2])
+
+colnames(rowNetfin) <- c("Mean", "Std. Err.")
+
+Part1 <- rbind(rowAge, rowAge1, rowMen, rowMarried, rowEduc, rowEmployed, 
+               rowUnemployed, rowRetired, rowIncome, rowNetfin)
+
+Part1 <- as.data.frame(Part1)
+
+Part1
+
+rownames(Part1) <- c("Age",
+                     "Age: 18 to 35", 
+                     "Age: 36 to 50", 
+                     "Age: 51 to 65", 
+                     "Age: over 65",  
+                     "Men", 
+                     "Married or living with a partner", 
+                     "Education: lower than high school", 
+                     "Education: high school graduate or some college but no degree", 
+                     "Education: college degree or bachelor's degree", 
+                     "Education: master's degree or higher", 
+                     "Employed", 
+                     "Unemployed", 
+                     "Retired", 
+                     "Total income 2015 (USD)", 
+                     "Net financial wealth - end of 2015 (USD)")
+
+Part1
+```
+
+```{r}
+#Describtive table: min, max
+
+weightsrvyr <- Data %>%
+   as_survey_design(weights = nwgt)
+
+rowAge <- weightsrvyr %>% 
+  srvyr::summarise(X14 = min(X14), X14 = max(X14))
+
+rowAge1 <- data.frame("Min" = 1, "Max" = 4)
+rowAge1
+
+rowAge2 <- data.frame("Min" = 1, "Max" = 4)
+rowAge2
+
+rowAge3 <- data.frame("Min" = 1, "Max" = 4)
+rowAge3
+
+rowAge4 <- data.frame("Min" = 1, "Max" = 4)
+rowAge4
+
+colnames(rowAge) <- c("Min", "Max")
+
+rowMen <- data.frame("Min" = 0, "Max" = 1)
+rowMen
+
+rowMarried <- data.frame("Min" = 0, "Max" = 1)
+rowMarried
+
+rowEduc1 <- data.frame("Min" = 1, "Max" = 4)
+rowEduc1
+
+rowEduc2 <- data.frame("Min" = 1, "Max" = 4)
+rowEduc2
+
+rowEduc3 <- data.frame("Min" = 1, "Max" = 4)
+rowEduc3
+
+rowEduc4 <- data.frame("Min" = 1, "Max" = 4)
+rowEduc4
+
+rowEmployed <- data.frame("Min" = 0, "Max" = 1)
+rowEmployed
+
+rowUnemployed <- data.frame("Min" = 0, "Max" = 1)
+rowUnemployed
+
+rowRetired <- data.frame("Min" = 0, "Max" = 1)
+rowRetired
+
+rowIncome <- weightsrvyr %>% 
+  srvyr::summarise(income = min(income), income = max(income))
+rowIncome <- cbind(rowIncome[,1], round(rowIncome[,2], digit = 0))
+
+colnames(rowIncome) <- c("Min", "Max")
+
+rowNetfin <- weightsrvyr %>% 
+  srvyr::summarise(netfin = min(netfin), netfin = max(netfin))
+
+colnames(rowNetfin) <- c("Min", "Max")
+
+Part2 <- rbind(rowAge, rowAge1, rowAge2, rowAge3, rowAge4, rowMen, 
+               rowMarried, rowEduc1, rowEduc2, rowEduc3, rowEduc4, 
+               rowEmployed, rowUnemployed, rowRetired, rowIncome, rowNetfin)
+
+Part2 <- as.data.frame(Part2)
+
+rownames(Part2) <- c("Age","Age: 18 to 35", 
+                     "Age: 36 to 50", 
+                     "Age: 51 to 65", 
+                     "Age: over 65",  
+                     "Men", 
+                     "Married or living with a partner", 
+                     "Education: lower than high school", 
+                     "Education: high school graduate or some college but no degree", 
+                     "Education: college degree or bachelor's degree", 
+                     "Education: master's degree or higher", 
+                     "Employed", 
+                     "Unemployed", 
+                     "Retired", 
+                     "Total income 2015 (USD)", 
+                     "Net financial wealth - end of 2015 (USD)")
+
+Part2
+
+summary(Data$netfin)
+```
+
+```{r}
+#Create table 1
+Table1 <- cbind(Part1, Part2)
+Table1
+
+#Export it as word document
+stargazer(Table1, 
+          title="Descriptive Statistics",
+          summary = FALSE,
+          type = "html", 
+          out= "star_descriptive_1.doc")
+
+#Text for Table 1
+#Table 1: Sample statistics
+#This table contains sample statistics for 6,169 respondents in SCF 2016.
+#Source: SCF 2016, data are weighted
+```
+
+## Table 2
+
+```{r}
+#Define weight design
+weightsrvyr <- Data %>%
+   as_survey_design(weights = nwgt)
+
+#Create table for Table 2
+Table2 <- svyby(formula = ~baseFinlit, 
+             by = ~hhsex,
+             design = weightsrvyr, 
+             FUN = svymean, 
+             na.rm = TRUE, 
+             keep.names = FALSE)
+
+#Make sure that Table2 is a data frame
+(Table2 <- as.data.frame(Table2))
+
+#Change variable output names
+Table2$hhsex <- factor(Table2$hhsex, levels = c("0", "1"),
+                       labels = c("Men", "Women"))
+
+Table2
+
+#Round results
+Table2$baseFinlit0 <-  1 - Table2$baseFinlit
+Table2$baseFinlit1 <- Table2$baseFinlit
+
+#Select columns
+Table2 <- Table2 %>% select(hhsex, baseFinlit0, baseFinlit1)
+
+Table2
+
+#Change column names
+colnames(Table2) <- c("Gender", "Illiterate", "Literate")
+
+#Create row for total financial literacy
+rowTotal <- svymean(~baseFinlit, design = weightsrvyr)
+rowTotal <- as.data.frame(rowTotal)
+rowVariable <- c("Illiterate", "Literate")
+rowTotal <- cbind(rowTotal, rowVariable)
+rowTotal <- spread(rowTotal, rowVariable, mean)
+rowTotal <- rowTotal %>% select("Illiterate", "Literate")
+rowDescription <- "Total"
+rowTotal <- cbind(rowDescription, rowTotal)
+colnames(rowTotal) <- c("Gender", "Illiterate", "Literate")
+Table2 <- rbind(Table2, rowTotal)
+
+percent <- function(x, digits = 2, format = "f", ...) {
+  paste0(formatC(100 * x, format = format, digits = digits, ...), "%")
+}
+
+Table2$Illiterate <- percent(Table2$Illiterate)
+Table2$Literate <- percent(Table2$Literate)
+
+Table2
+
+#Export it as word document
+stargazer(Table2, 
+          title="Descriptive Statistics",
+          summary = FALSE,
+          type = "html", 
+          out= "star_descriptive_2.doc")
+```
+
+## Info 1 - Stock market particpation based on financial literacy
+
+```{r}
+#Define weight design
+weightsrvyr <- Data %>%
+   as_survey_design(weights = nwgt)
+
+#Create table for Graph 1
+Info1 <- svyby(formula = ~hsttotal, 
+             by = ~baseFinlit,
+             design = weightsrvyr, 
+             FUN = svymean, 
+             na.rm = TRUE, 
+             keep.names = FALSE)
+
+Info1 <- as.data.frame(Info1)
+Info1$hsttotal <- round(Info1$hsttotal, digits = 4)
+
+Info1
+
+svyttest(hsttotal~baseFinlit, design = weightsrvyr)
+```
+
+## Graph 1 - Types of financial assets and stock market participation over financial literacy
+
+```{r}
+#Define weight design
+weightsrvyr <- Data %>%
+   as_survey_design(weights = nwgt)
+
+#Create table for Graph 5
+Graph1 <- svyby(formula = ~ hststcomutf + hreteq + hsttotal, 
+             by = ~baseFinlit,
+             design = weightsrvyr, 
+             FUN = svymean, 
+             na.rm = TRUE, 
+             keep.names = FALSE)
+
+#Make sure that Graph1 is a data frame
+Graph1 <- as.data.frame(Graph1)
+Graph1
+
+#Transform Graph1 to long format
+Graph1Long <- melt(Graph1, id = "baseFinlit", 
+                   measure = c("hststcomutf", "hreteq", "hsttotal"))
+Graph1Long$variable <- factor(Graph1Long$variable, 
+                              levels = c("hststcomutf", "hreteq", "hsttotal"), 
+                  labels = c("Stocks and stock mutual funds", "Quasi-liquid retirement assets", "Total"))
+Graph1Long
+
+Graph1Long$baseFinlit <- c("Illiterate", "Literate", "Illiterate", "Literate", "Illiterate", "Literate")
+
+#Create Graph 1 Long with ggplot2
+ggplot(data = Graph1Long, aes(x = baseFinlit,y = value, fill = variable)) + 
+  geom_col(fill = c("lightgrey","grey", "lightgrey","grey", "lightgrey","grey")) +
+  facet_wrap(~variable) +
+  xlab("Financial literacy") + 
+  ylab("Stock market participation") +
+  scale_y_continuous(breaks = c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1), 
+                     labels = c("0%", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%"), 
+                     expand = c(0,0), limits=c(0,1)) +
+  expand_limits(y = 0) +
+    theme(## plotregion
+        panel.background = element_rect(fill = "white",
+                                colour = "white"),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "lightgrey"),
+        panel.grid.minor = element_blank(),
+        panel.spacing = unit(0.25, "lines"),
+        ## axis line
+        axis.line = element_line(colour = "black", 
+                      size = 0.5, linetype = "solid"),
+        ##background of fill
+        strip.background = element_rect(fill="#f2f2f2"),
+        ##delete legend
+        legend.position = "none"
+  )
+
+#Save Graph1
+Graph1
+ggsave("Graph1.png", width = 20, height = 10, units = "cm")
+
+#t-Test
+svyttest(hststcomutf~baseFinlit, design = weightsrvyr)
+```
+
+## Graph 2 - Financial literacy and stock market participation over levels of educa-tion
+
+```{r}
+#Define weight design
+weightsrvyr <- Data %>%
+   as_survey_design(weights = nwgt)
+
+#Create table for Graph 2
+Graph2 <- svyby(formula = ~hsttotal, 
+             by = ~educFactor + baseFinlit,
+             design = weightsrvyr, 
+             FUN = svymean, 
+             na.rm = TRUE, 
+             keep.names = FALSE)
+
+#Make sure that Graph1 is a data frame
+Graph2 <- as.data.frame(Graph2)
+
+#Change variable format so that graph works
+Graph2$educFactor <- as.numeric(Graph2$educFactor)
+Graph2
+
+Graph2$baseFinlit <- c("Illiterate", "Illiterate", "Illiterate", 
+                       "Illiterate", "Literate", "Literate", "Literate", "Literate")
+
+#Create Graph 2 with ggplot2
+ggplot(data = Graph2, aes(x = educFactor,y = hsttotal)) + 
+  geom_line(aes(linetype = baseFinlit)) +
+  geom_point() +
+  xlab("Education level") + 
+  ylab("Stock market participation") +
+  labs(linetype = "Financial literacy") +
+  scale_y_continuous(breaks = c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1), 
+                     labels = c("0%", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%"), 
+                     expand = c(0,0), limits=c(0,1)) +
+  expand_limits(y = 0) +
+  theme(## legend
+    legend.title.align = 0.5,
+        legend.position = "bottom",
+        legend.direction = NULL,
+        legend.justification = "center",
+        legend.box = "vertical",
+        ## plotregion
+        panel.background = element_rect(fill = "white",
+                                colour = "white"),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "lightgrey"),
+        panel.grid.minor = element_blank(),
+        panel.spacing = unit(0.25, "lines"),
+        ## axis line
+        axis.line = element_line(colour = "black", 
+                      size = 0.5, linetype = "solid")
+  )
+
+#Save Graph2
+ggsave("Graph2.png", width = 20, height = 10, units = "cm")
+```
+
+## Graph 3 - Financial literacy and stock market participation over percentiles of total net worth
+
+```{r}
+#Define weight design
+weightsrvyr <- Data %>%
+   as_survey_design(weights = nwgt)
+
+#Create table for Graph 3
+Graph3 <- svyby(formula = ~hsttotal, 
+             by = ~baseFinlit + nwcat,
+             design = weightsrvyr, 
+             FUN = svymean, 
+             na.rm = TRUE, 
+             keep.names = FALSE)
+
+#Make sure that Graph1 is a data frame
+Graph3 <- as.data.frame(Graph3)
+
+#Calculate percentage change column
+Graph3 %>%
+  mutate(pct_change = (hsttotal/lag(hsttotal) - 1) * 100)
+
+Graph3$baseFinlit <- c("Illiterate", "Literate", "Illiterate", "Literate", 
+                       "Illiterate", "Literate", "Illiterate", "Literate", 
+                       "Illiterate", "Literate")
+
+#Create Graph 3 with ggplot2
+ggplot(data = Graph3, aes(x = nwcat,y = hsttotal)) + 
+  geom_line(aes(linetype = baseFinlit)) +
+  geom_point() +
+  xlab("Net worth percentile groups") + 
+  ylab("Stock market participation") +
+  labs(linetype = "Financial literacy") +
+  scale_y_continuous(breaks = c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1), 
+                     labels = c("0%", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%"), 
+                     expand = c(0,0), limits=c(0,1)) +
+  expand_limits(y = 0) +
+  theme(## legend
+    legend.title.align = 0.5,
+        legend.position = "bottom",
+        legend.direction = NULL,
+        legend.justification = "center",
+        legend.box = "vertical",
+        ## plotregion
+        panel.background = element_rect(fill = "white",
+                                colour = "white"),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "lightgrey"),
+        panel.grid.minor = element_blank(),
+        panel.spacing = unit(0.25, "lines"),
+        ## axis line
+        axis.line = element_line(colour = "black", 
+                      size = 0.5, linetype = "solid")
+  )
+
+#Save Graph3
+ggsave("Graph3.png", width = 20, height = 10, units = "cm")
+```
+ 
+# Probit regression
+
+```{r}
+#"Normal" probit regression with weight variable
+probit1 <- glm(hsttotal ~ baseFinlit + selfFinlit + ageGroups + hhsex + married + 
+                 educFactor + logincome + lognetfin + hthousing + hbus + finRisk, 
+               data = Data, weight = nwgt, family = binomial(link = "probit"))
+summary(probit1)
+```
+
+```{r}
+#Probit with weight variable with robust standard errors using sandwish package
+probit1weight1 <- coeftest(probit1, vcov = vcovHC(probit1))
+summary(probit1weight1)
+```
+
+```{r}
+#Probit with weight variable with robust standard errors using survey package
+
+weight <- svydesign(ids = ~1, #no clusters
+                    probs = NULL, #no cluster sampling probabilities
+                    fpc = NULL, #strata size in the population
+                    strata = NULL, #no strata
+                    weights = Data$nwgt, data = Data)
+
+##Probit without financial literacy measure
+probit1weight2 <- svyglm(hsttotal ~ ageGroups + hhsex + married + educFactor + 
+                           logincome + lognetfin + hthousing + hbus + finRisk, 
+                         design = weight, family = binomial(link = "probit"))
+summary(probit1weight2)
+
+##Probit with financial literacy measure
+probit1weight3 <- svyglm(hsttotal ~ baseFinlit + selfFinlit + ageGroups + hhsex + married + 
+                           educFactor + logincome + lognetfin + hthousing + hbus + finRisk, 
+                         design = weight, family = binomial(link = "probit"))
+summary(probit1weight3)
+
+##Probit with financial literacy measure
+probit1weight4 <- svyglm(hsttotal ~ baseFinlit + selfFinlit + ageGroups + hhsex + married + 
+                           educFactor + logincome + lognetfin + hthousing + hbus + finRiskNumeric, 
+                         design = weight, family = binomial(link = "probit"))
+summary(probit1weight3)
+
+#Get Pseudo R-Squared
+psrsq(probit1weight2, method = c("Cox-Snell"))
+
+psrsq(probit1weight3, method = c("Cox-Snell"))
+```
+
+```{r}
+#Plot probit1
+stargazer(probit1weight3, probit1weight4, 
+          single.row = TRUE,
+          covariate.labels = c("Basic financial literacy", 
+                               "Self-assessed financial literacy", 
+                               "Age: 36 to 50", "Age: 51 to 65", 
+                               "Age: over 65", 
+                               "Men",
+                               "Married or living with partner", 
+                               "Education: high school graduate or some college but no degree", 
+                               "Education: college degree or bachelor's degree", 
+                               "Education: master's degree or higher", 
+                               "Ln(Total Income)", "Ln(Net financial wealth)", 
+                               "Real estate ownership", "Business ownership", 
+                               "Risk attitude: take above average financial risks", 
+                               "Risk attitude: take average financial risks", 
+                               "Risk attitude: not willing to take any financial risks"),
+          type="html",
+          out="star_probit1.doc")
+```
+
+### SAVE FOR LATER ### NOT NEEDED ANYMORE
+
+# Multiple linear regression
+
+```{r}
+#"Normal" multiple linear regression
+mod1 <- lm(sttotal ~ baseFinlit + ageGroups + hhsex + married + educFactor 
+           + income + netfin + hthousing + hbus + finRisk, 
+           data = Data, weights = nwgt)
+summary(mod1)
+
+#Step-wise backward regression
+mod2 <- stepAIC(mod1, direction = "both", trace = FALSE)
+summary(mod2)
+
+#Multiple linear regression with weight variable with robust standard errors using sandwish package
+modweight1 <- coeftest(mod1, vcov = vcovHC(mod1))
+summary(modweight1)
+```
+
+```{r}
+#Multiple linear regression with robust standard errors using survey package (weight in design included)
+weight <- svydesign(ids = ~1, #no clusters
+                    probs = NULL, #no cluster sampling probabilities
+                    fpc = NULL, #strata size in the population
+                    strata = NULL, #no strata
+                    weights = Data$nwgt, data = Data)
+
+modweight2 <- svyglm(sttotal ~ageGroups + hhsex + married + educFactor + 
+                       logincome + lognetfin + hthousing + hbus + finRisk, 
+                     design = weight)
+summary(modweight2)
+
+modweight3 <- svyglm(sttotal ~ baseFinlit + ageGroups + hhsex + married + 
+                       educFactor + logincome + lognetfin + hthousing + hbus + finRisk, 
+                     design = weight)
+summary(modweight3)
+
+#Get R-Squared and adjusted R-Squared
+fit.svyglm(modweight3, digit = 4)
+```
+
+```{r}
+#Plot
+stargazer(modweight2, modweight3, 
+          type="html",
+          covariate.labels = c("Financial literacy", 
+                               "Age: 36 to 50", 
+                               "Age: 51 to 65", 
+                               "Age: over 59", 
+                               "Men", 
+                               "Married or living with partner", 
+                               "Education: high school graduate or some college but no degree", 
+                               "Education: college degree or bachelor's degree", 
+                               "Education: master's degree or higher", 
+                               "Total Income 2015", 
+                               "Net wealth - end of 2015", 
+                               "Real estate ownership", 
+                               "Business ownership", 
+                               "Risk attitude"),
+          out="star_linear.doc")
+```
+
+# Test for Multicollinearity
+
+Multicollinearity is when there is correlation between predictors (i.e. independent variables) 
+in a model. Its presence can adversely affect our regression results.
+
+```{r}
+#Create correlation matrix
+#ggcorr(dplyr::select(Data, hsttotal,baseFinlit, ageGroups, hhsex, 
+#married, educFactor1, logincome, lognetfin, hthousing, hbus, finRisk), label = TRUE)
+```
+
+In the next step, we test the variance inflation factor (VIF). The VIF estimates how much the 
+variance of a regression coefficient is inflated due to multicollinearity in the model. It 
+quantifies the severity of multicollinearity in an OLS regression analysis.
+
+```{r}
+#Calculate VIF per independent variable in model
+#vif(mod2)
+
+#Calculate mean of VIFs
+#mean(vif(mod2))
+```
+
+An average mean between 1 and 5 indicates a moderate correlated result. In general, a VIF 
+above 10 indicates high correlation and is cause for concern. Some authors suggest a more 
+conservative level of 2.5 or above. Since our average VIF is under 2.5, we assume that 
+multicollinearity is not considered as a problem in step.model.
+
+# Test for Homoscedasticity
+
+Homoscedasticity means that the residuals do not have a constant variance. We need to 
+check if residuals are normally distributed.
+
+```{r}
+#shapiro.test(rstandard(mod1))
+```
+
+Shapiro-Wilk-Test of standardized residuals is significant. Residuals differ significantly 
+from normal distribution; assumption of homoscedasticity is violated.
+
+The absence of a normal distribution signifies only that the F- and t-tests are not meaningfully 
+applicable. The estimated regression coefficients are still unbiased.
+
+# Expected value of zero for the residuals E(e~i~) = 0
+
+```{r}
+#wilcox.test(rstandard(mod1))
+```
+
+Zero hypothesis cannot be rejected.
+
+The standardized residual is the residual divided by its standard deviation. We use it to show 
+the difference of mean of residuals from 0 graphically.
+
+```{r}
+#boxplot(rstandard(mod1)) 
+#abline(h=0)
+```
+
+
+
+
+
