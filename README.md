@@ -1,4 +1,3 @@
-# Financial Literacy and Stock Market Participation: Evidence From the Survey of Consumer Finances
 ## About the paper
 This research paper was written in winter 2019/20 within the Master's seminar *Big Data in Personal Finance*. Within this repository, I analyzed the Survey of Consumer Finances 2016 with regards to the effect of financial literacy to stock market participation using R. Read the full paper here https://github.com/JRatschat/Financial-Literacy-and-Stock-Market-Participation.
 
