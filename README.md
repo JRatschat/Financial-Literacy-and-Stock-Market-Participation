@@ -9,21 +9,9 @@ The contribution to the existing literature is that this paper analyzes the Surv
 ## Results
 In the descriptive analysis, I was able to show that there is a difference of stock market participation conditional on financial literacy. Also, financial literacy proxies used in previous research like education and wealth show structural differences in stock market participation when separated in financial literacy groups. More importantly, the Probit regression analysis confirms the results that financial literacy has indeed a significant effect in the decision to participate in the stock market. Therefore, I show that a lack of financial knowledge is a significant deterrent to stock ownership.
 
-### Figures
-
 #### *Types of financial assets and stock market participation over financial literacy*
 <p align="center">
   <img width="100" src="https://github.com/JRatschat/Financial-Literacy-and-Stock-Market-Participation/blob/master/figures/Graph1.png">
-</p>
-
-#### *Share of stock market participation by education levels and financial literacy*
-<p align="center">
-  <img src="https://github.com/JRatschat/Financial-Literacy-and-Stock-Market-Participation/blob/master/figures/Graph2.png">
-</p>
-
-#### *Share of stock market participation over percentiles of total net worth and financial literacy*
-<p align="center">
-  <img src="https://github.com/JRatschat/Financial-Literacy-and-Stock-Market-Participation/blob/master/figures/Graph3.png">
 </p>
 
 
