@@ -13,7 +13,7 @@ In the descriptive analysis, I was able to show that there is a difference of st
 
 #### *Types of financial assets and stock market participation over financial literacy*
 <p align="center">
-  <img src="https://github.com/JRatschat/Financial-Literacy-and-Stock-Market-Participation/blob/master/figures/Graph1.png">
+  <img width="100" src="https://github.com/JRatschat/Financial-Literacy-and-Stock-Market-Participation/blob/master/figures/Graph1.png">
 </p>
 
 #### *Share of stock market participation by education levels and financial literacy*
